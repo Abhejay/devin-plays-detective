@@ -1,0 +1,370 @@
+name: CodeQL Auto-Fix with Devin
+
+on:
+  pull_request:
+    branches: ["main", "master", "develop"]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: read
+  actions: read
+
+jobs:
+
+  codeql-scan:
+    name: CodeQL Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript", "python"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          output: codeql-results
+          upload: always
+
+      - name: Upload SARIF results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: codeql-results/*.sarif
+          retention-days: 7
+
+  group-alerts:
+    name: Group Alerts by Vulnerability Type
+    runs-on: ubuntu-latest
+    needs: codeql-scan
+    outputs:
+      batches: ${{ steps.group.outputs.batches }}
+      has_issues: ${{ steps.group.outputs.has_issues }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all SARIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codeql-sarif-*
+          merge-multiple: true
+          path: sarif-results/
+
+      - name: Group alerts by vulnerability type
+        id: group
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const sarifDir = 'sarif-results';
+            const files = fs.readdirSync(sarifDir).filter(f => f.endsWith('.sarif'));
+
+            // Map of vulnerability type -> list of findings
+            const groupedAlerts = {};
+
+            for (const file of files) {
+              const sarif = JSON.parse(fs.readFileSync(path.join(sarifDir, file), 'utf8'));
+
+              for (const run of sarif.runs || []) {
+                const rules = {};
+                for (const rule of run.tool?.driver?.rules || []) {
+                  rules[rule.id] = {
+                    name: rule.name,
+                    description: rule.shortDescription?.text || rule.id,
+                    tags: rule.properties?.tags || [],
+                    severity: rule.properties?.['problem.severity'] || 'warning'
+                  };
+                }
+
+                for (const result of run.results || []) {
+                  const ruleId = result.ruleId;
+                  const ruleInfo = rules[ruleId] || { name: ruleId, tags: [], severity: 'warning' };
+
+                  // Determine vulnerability category from CWE tags or rule name
+                  let vulnType = classifyVulnerability(ruleId, ruleInfo.tags, ruleInfo.name);
+
+                  if (!groupedAlerts[vulnType]) {
+                    groupedAlerts[vulnType] = [];
+                  }
+
+                  for (const loc of result.locations || []) {
+                    const filePath = loc.physicalLocation?.artifactLocation?.uri;
+                    const startLine = loc.physicalLocation?.region?.startLine;
+                    groupedAlerts[vulnType].push({
+                      ruleId,
+                      ruleName: ruleInfo.name,
+                      description: ruleInfo.description,
+                      severity: ruleInfo.severity,
+                      file: filePath,
+                      line: startLine,
+                      message: result.message?.text || ''
+                    });
+                  }
+                }
+              }
+            }
+
+            function classifyVulnerability(ruleId, tags, ruleName) {
+              const id = (ruleId + ruleName).toLowerCase();
+              const tagStr = tags.join(' ').toLowerCase();
+
+              if (id.includes('sql') || tagStr.includes('cwe-89'))   return 'sql-injection';
+              if (id.includes('xss') || id.includes('cross-site') || tagStr.includes('cwe-79')) return 'xss';
+              if (id.includes('path') || id.includes('traversal') || tagStr.includes('cwe-22')) return 'path-traversal';
+              if (id.includes('command') || id.includes('injection') || tagStr.includes('cwe-78')) return 'command-injection';
+              if (id.includes('deserializ') || tagStr.includes('cwe-502')) return 'insecure-deserialization';
+              if (id.includes('credential') || id.includes('hardcod') || tagStr.includes('cwe-798')) return 'hardcoded-credentials';
+              if (id.includes('xxe') || tagStr.includes('cwe-611')) return 'xxe';
+              if (id.includes('ssrf') || tagStr.includes('cwe-918')) return 'ssrf';
+              if (id.includes('redirect') || tagStr.includes('cwe-601')) return 'open-redirect';
+              if (id.includes('csrf') || tagStr.includes('cwe-352')) return 'csrf';
+              if (id.includes('crypto') || id.includes('cipher') || tagStr.includes('cwe-327')) return 'weak-cryptography';
+              if (id.includes('null') || id.includes('dereference')) return 'null-dereference';
+              return 'other-security';
+            }
+
+            const batches = Object.entries(groupedAlerts)
+              .filter(([, issues]) => issues.length > 0)
+              .map(([type, issues]) => ({ type, issues, count: issues.length }));
+
+            const hasIssues = batches.length > 0;
+            console.log(`Found ${batches.length} vulnerability type(s) with issues`);
+            batches.forEach(b => console.log(`  - ${b.type}: ${b.count} issue(s)`));
+
+            core.setOutput('batches', JSON.stringify(batches));
+            core.setOutput('has_issues', hasIssues.toString());
+
+  fetch-live-alerts:
+    name: Fetch Live CodeQL Alerts
+    runs-on: ubuntu-latest
+    needs: codeql-scan
+    outputs:
+      alert_map: ${{ steps.fetch.outputs.alert_map }}
+
+    steps:
+      - name: Fetch open CodeQL alerts via API
+        id: fetch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const alerts = await github.paginate(
+              github.rest.codeScanning.listAlertsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                tool_name: 'CodeQL',
+                per_page: 100
+              }
+            );
+
+            // Map alert numbers by rule ID for cross-reference
+            const alertMap = {};
+            for (const alert of alerts) {
+              const rule = alert.rule?.id;
+              if (!alertMap[rule]) alertMap[rule] = [];
+              alertMap[rule].push({
+                number: alert.number,
+                url: alert.html_url,
+                severity: alert.rule?.severity,
+                file: alert.most_recent_instance?.location?.path,
+                line: alert.most_recent_instance?.location?.start_line
+              });
+            }
+
+            core.setOutput('alert_map', JSON.stringify(alertMap));
+            console.log(`Fetched ${alerts.length} open CodeQL alert(s)`);
+
+  trigger-devin-fixes:
+    name: Trigger Devin Fix — ${{ matrix.batch.type }}
+    runs-on: ubuntu-latest
+    needs: [group-alerts, fetch-live-alerts]
+    if: needs.group-alerts.outputs.has_issues == 'true'
+
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        batch: ${{ fromJson(needs.group-alerts.outputs.batches) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Devin prompt for ${{ matrix.batch.type }}
+        id: build-prompt
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const batch = ${{ toJson(matrix.batch) }};
+            const alertMap = ${{ needs.fetch-live-alerts.outputs.alert_map }};
+            const prNumber = context.payload.pull_request?.number;
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const branchName = `fix/codeql-${batch.type}-pr${prNumber}-${Date.now()}`;
+
+            // Build structured issue list for Devin
+            const issueList = batch.issues.map((issue, i) => {
+              const liveAlerts = alertMap[issue.ruleId] || [];
+              const alertUrls = liveAlerts.map(a => a.url).join(', ');
+              return `${i + 1}. **${issue.ruleName}** in \`${issue.file}:${issue.line}\`
+                - Message: ${issue.message}
+                - Severity: ${issue.severity}
+                - GitHub Alert(s): ${alertUrls || 'see SARIF results'}`;
+            }).join('\n');
+
+            const prompt = `You are a security engineer. Fix the following **${batch.type.toUpperCase().replace(/-/g, ' ')}** vulnerabilities found by CodeQL in this repository.
+
+            ## Repository
+            ${repoUrl}
+            Branch to fix: \`${context.payload.pull_request?.head?.ref || 'main'}\`
+            Create your fixes on a new branch: \`${branchName}\`
+
+            ## Vulnerabilities to Fix (${batch.count} issue(s))
+            ${issueList}
+
+            ## Instructions
+            1. Clone the repository and create branch \`${branchName}\` from the PR's head branch
+            2. Fix ALL ${batch.count} ${batch.type} issue(s) listed above
+            3. Follow secure coding best practices — do NOT just suppress warnings
+            4. Ensure existing tests still pass; add new tests if appropriate
+            5. Commit with message: \`fix(security): resolve ${batch.count} ${batch.type} CodeQL findings\`
+            6. Push the branch and open a **DRAFT** pull request targeting \`${context.payload.pull_request?.base?.ref || 'main'}\`
+            7. PR title: \`[Security] Fix ${batch.count} ${batch.type} CodeQL finding(s)\`
+            8. PR description must include: list of fixed files, brief explanation of each fix, and link back to PR #${prNumber}
+
+            ## Do NOT
+            - Merge without human review
+            - Suppress/ignore alerts with comments
+            - Change unrelated code
+            - Break existing functionality`;
+
+            core.setOutput('prompt', prompt);
+            core.setOutput('branch_name', branchName);
+            console.log(`Built prompt for ${batch.type} (${batch.count} issues)`);
+
+      - name: Trigger Devin API session
+        id: devin
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+        run: |
+          PROMPT=$(cat << 'PROMPT_EOF'
+          ${{ steps.build-prompt.outputs.prompt }}
+          PROMPT_EOF
+          )
+
+          RESPONSE=$(curl -s -X POST "https://api.devin.ai/v1/sessions" \
+            -H "Authorization: Bearer ${DEVIN_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"prompt\": $(echo "$PROMPT" | jq -Rs .),
+              \"idempotency_key\": \"codeql-${{ matrix.batch.type }}-${{ github.run_id }}\",
+              \"max_acu_limit\": 50
+            }")
+
+          echo "Devin API Response: $RESPONSE"
+
+          SESSION_ID=$(echo "$RESPONSE" | jq -r '.session_id // empty')
+          SESSION_URL=$(echo "$RESPONSE" | jq -r '.url // empty')
+
+          if [ -z "$SESSION_ID" ]; then
+            echo "::warning::Devin session creation failed for ${{ matrix.batch.type }}"
+            echo "session_id=failed" >> $GITHUB_OUTPUT
+          else
+            echo "session_id=$SESSION_ID" >> $GITHUB_OUTPUT
+            echo "session_url=$SESSION_URL" >> $GITHUB_OUTPUT
+            echo "::notice::Devin session started: $SESSION_URL"
+          fi
+
+      - name: Comment on PR with Devin session details
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const batchType = '${{ matrix.batch.type }}';
+            const batchCount = ${{ matrix.batch.count }};
+            const sessionId = '${{ steps.devin.outputs.session_id }}';
+            const sessionUrl = '${{ steps.devin.outputs.session_url }}';
+            const prNumber = context.payload.pull_request?.number;
+
+            const icon = sessionId === 'failed' ? '⚠️' : '🤖';
+            const status = sessionId === 'failed'
+              ? 'Failed to start — check `DEVIN_API_KEY` secret'
+              : `Started — [View Session](${sessionUrl})`;
+
+            const severityEmoji = {
+              'sql-injection': '🔴',
+              'xss': '🟠',
+              'command-injection': '🔴',
+              'path-traversal': '🟠',
+              'hardcoded-credentials': '🔴',
+              'insecure-deserialization': '🟠',
+              'weak-cryptography': '🟡',
+              'open-redirect': '🟡',
+              'ssrf': '🟠',
+              'csrf': '🟡',
+              'xxe': '🟠',
+              'null-dereference': '🟡',
+              'other-security': '⚪'
+            };
+
+            const emoji = severityEmoji[batchType] || '⚪';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `${icon} **CodeQL Auto-Fix: \`${batchType}\`** ${emoji}
+
+            | Field | Value |
+            |-------|-------|
+            | Vulnerability Type | \`${batchType}\` |
+            | Issues Found | ${batchCount} |
+            | Devin Session | ${status} |
+            | Branch | \`${{ steps.build-prompt.outputs.branch_name }}\` |
+
+            A **draft PR** will be opened by Devin once fixes are ready. Please review before merging.`
+            });
+
+  no-issues-comment:
+    name: Comment — No Issues Found
+    runs-on: ubuntu-latest
+    needs: group-alerts
+    if: needs.group-alerts.outputs.has_issues == 'false'
+
+    steps:
+      - name: Post clean bill of health
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `✅ **CodeQL Scan Complete** — No security issues found! This PR is clear of all CodeQL vulnerability checks.`
+            });
