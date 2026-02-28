@@ -277,7 +277,7 @@ jobs:
           PROMPT_EOF
           )
 
-          RESPONSE=$(curl -s -X POST "https://api.devin.ai/v1/sessions" \
+          RESPONSE=$(curl -s -X POST "https://api.devin.ai/v3/sessions" \
             -H "Authorization: Bearer ${DEVIN_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{
