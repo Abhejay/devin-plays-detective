@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         # Adjust languages to match your repo
-        language: ["python"]
+        language: ["javascript", "python"]
         # Supported: cpp, csharp, go, java, javascript, python, ruby, swift
 
     steps:
@@ -291,12 +291,25 @@ jobs:
           PROMPT_EOF
           )
 
-          RESPONSE=$(curl -s -X POST "https://api.devin.ai/v3/sessions" \
+          # Step 1: Get org ID dynamically
+          ORG_RESPONSE=$(curl -s "https://api.devin.ai/v3beta1/enterprise/organizations" \
+            -H "Authorization: Bearer ${DEVIN_API_KEY}")
+          echo "Org Response: $ORG_RESPONSE"
+          ORG_ID=$(echo "$ORG_RESPONSE" | jq -r '.organizations[0].id // empty')
+          echo "Org ID: $ORG_ID"
+
+          if [ -z "$ORG_ID" ]; then
+            echo "::error::Could not retrieve Devin Org ID — check DEVIN_SERVICE_USER_TOKEN permissions"
+            echo "session_id=failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Step 2: Create session using org ID
+          RESPONSE=$(curl -s -X POST "https://api.devin.ai/v3beta1/organizations/${ORG_ID}/sessions" \
             -H "Authorization: Bearer ${DEVIN_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{
               \"prompt\": $(echo "$PROMPT" | jq -Rs .),
-              \"idempotency_key\": \"codeql-${{ matrix.batch.type }}-${{ github.run_id }}\",
               \"max_acu_limit\": 50
             }")
 
