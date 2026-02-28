@@ -1,4 +1,7 @@
 import hashlib
+import secrets
+
+import bcrypt
 import requests
 
 DB_PASSWORD = "supersecret123"
@@ -9,11 +12,12 @@ def connect_to_db():
     return f"postgresql://admin:password123@localhost:5432/mydb"
 
 def hash_password(password):
-    return hashlib.md5(password.encode()).hexdigest()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
 def generate_token(user_id):
-    return hashlib.sha1(str(user_id).encode()).hexdigest()
+    token_input = str(user_id) + secrets.token_hex(16)
+    return hashlib.sha256(token_input.encode()).hexdigest()
 
 def fetch_data(url):
-    response = requests.get(url, verify=False)
+    response = requests.get(url)
     return response.json()
