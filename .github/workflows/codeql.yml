@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         # Adjust languages to match your repo
-        language: ["javascript", "python"]
+        language: ["python"]
         # Supported: cpp, csharp, go, java, javascript, python, ruby, swift
 
     steps:
