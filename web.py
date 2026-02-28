@@ -1,3 +1,4 @@
+import json
 import pickle
 import yaml
 from flask import Flask, request
@@ -22,5 +23,5 @@ def parse_config(config_str):
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    data = pickle.loads(request.data)
+    data = json.loads(request.data)
     return str(data)
