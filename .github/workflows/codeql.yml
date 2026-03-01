@@ -211,65 +211,69 @@ jobs:
             core.setOutput('alert_map', JSON.stringify(alertMap));
             console.log(`Fetched ${alerts.length} open CodeQL alert(s)`);
 
-  # ──────────────────────────────────────────────
-  # JOB 4: Trigger Devin for Each Vulnerability Batch
-  # ──────────────────────────────────────────────
+
   trigger-devin-fixes:
-    name: Trigger Devin Fix — ${{ matrix.batch.type }}
+    name: Trigger Devin Fixes
     runs-on: ubuntu-latest
     needs: [group-alerts, fetch-live-alerts]
     if: needs.group-alerts.outputs.has_issues == 'true'
-
-    strategy:
-      fail-fast: false
-      max-parallel: 3   # Limit concurrent Devin sessions
-      matrix:
-        batch: ${{ fromJson(needs.group-alerts.outputs.batches) }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build Devin prompt for ${{ matrix.batch.type }}
+      - name: Build Devin prompt for all issues
         id: build-prompt
         uses: actions/github-script@v7
         with:
           script: |
-            const batch = ${{ toJson(matrix.batch) }};
+            const batches = ${{ needs.group-alerts.outputs.batches }};
             const alertMap = ${{ needs.fetch-live-alerts.outputs.alert_map }};
             const prNumber = context.payload.pull_request?.number;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
-            const branchName = `fix/codeql-${batch.type}-pr${prNumber}-${Date.now()}`;
 
-            // Build structured issue list for Devin
-            const issueList = batch.issues.map((issue, i) => {
-              const liveAlerts = alertMap[issue.ruleId] || [];
-              const alertUrls = liveAlerts.map(a => a.url).join(', ');
-              return `${i + 1}. **${issue.ruleName}** in \`${issue.file}:${issue.line}\`
-                - Message: ${issue.message}
-                - Severity: ${issue.severity}
-                - GitHub Alert(s): ${alertUrls || 'see SARIF results'}`;
-            }).join('\n');
+            let totalIssues = 0;
+            let batchList = "";
 
-            const prompt = `You are a security engineer. Fix the following **${batch.type.toUpperCase().replace(/-/g, ' ')}** vulnerabilities found by CodeQL in this repository.
+            for (const batch of batches) {
+              batchList += `\n### Batch: ${batch.type.toUpperCase().replace(/-/g, ' ')} (${batch.count} issues)\n`;
+              let issueIndex = 1;
+              for (const issue of batch.issues) {
+                totalIssues++;
+                const liveAlerts = alertMap[issue.ruleId] || [];
+                const alertUrls = liveAlerts.map(a => a.url).join(', ');
+                batchList += `${issueIndex++}. **${issue.ruleName}** in \`${issue.file}:${issue.line}\`\n`;
+                batchList += `  - Message: ${issue.message}\n`;
+                batchList += `  - Severity: ${issue.severity}\n`;
+                batchList += `  - GitHub Alert(s): ${alertUrls || 'see SARIF results'}\n`;
+              }
+            }
+
+            const prompt = `You are a security engineer. Fix the vulnerabilities found by CodeQL in this repository.
 
             ## Repository
             ${repoUrl}
             Branch to fix: \`${context.payload.pull_request?.head?.ref || 'main'}\`
-            Create your fixes on a new branch: \`${branchName}\`
 
-            ## Vulnerabilities to Fix (${batch.count} issue(s))
-            ${issueList}
+            ## Vulnerabilities to Fix (${totalIssues} issue(s) total)
+            ${batchList}
 
             ## Instructions
-            1. Clone the repository and create branch \`${branchName}\` from the PR's head branch
-            2. Fix ALL ${batch.count} ${batch.type} issue(s) listed above
-            3. Follow secure coding best practices — do NOT just suppress warnings
-            4. Ensure existing tests still pass; add new tests if appropriate
-            5. Commit with message: \`fix(security): resolve ${batch.count} ${batch.type} CodeQL findings\`
-            6. Push the branch and open a **DRAFT** pull request targeting \`${context.payload.pull_request?.base?.ref || 'main'}\`
-            7. PR title: \`[Security] Fix ${batch.count} ${batch.type} CodeQL finding(s)\`
-            8. PR description must include: list of fixed files, brief explanation of each fix, and link back to PR #${prNumber}
+            You must resolve the vulnerabilities in batches. Create a separate PR for each batch.
+            To prevent merge conflicts, you must run these sequentially and "stack" your branches:
+
+            1. Clone the repository and checkout the branch to fix: \`${context.payload.pull_request?.head?.ref || 'main'}\`.
+            2. For each batch (in the order listed above):
+               a. Create a new branch based on your CURRENT state (so it includes fixes from previous batches). Name it \`fix/codeql-<batch-type>-pr${prNumber}-<timestamp>\`.
+               b. Fix ALL issues in that specific batch.
+               c. Follow secure coding best practices — do NOT just suppress warnings.
+               d. Ensure existing tests still pass; add new tests if appropriate.
+               e. Commit with message: \`fix(security): resolve <batch-type> CodeQL findings\`
+               f. Push the branch and open a **DRAFT** pull request targeting \`${context.payload.pull_request?.head?.ref || 'main'}\`.
+               g. PR title: \`[Security] Fix <batch-type> CodeQL finding(s)\`.
+               h. PR description must include: list of fixed files, brief explanation of each fix, and a link back to PR #${prNumber}.
+
+            By basing each new branch on the previous one, you ensure that all PRs can be merged without conflicts.
 
             ## Do NOT
             - Merge without human review
@@ -278,8 +282,8 @@ jobs:
             - Break existing functionality`;
 
             core.setOutput('prompt', prompt);
-            core.setOutput('branch_name', branchName);
-            console.log(`Built prompt for ${batch.type} (${batch.count} issues)`);
+            core.setOutput('total_issues', totalIssues);
+            console.log(`Built prompt for ${totalIssues} issues`);
 
       - name: Trigger Devin API session
         id: devin
@@ -306,7 +310,7 @@ jobs:
           SESSION_URL=$(echo "$RESPONSE" | jq -r '.url // empty')
 
           if [ -z "$SESSION_ID" ]; then
-            echo "::warning::Devin session creation failed for ${{ matrix.batch.type }}"
+            echo "::warning::Devin session creation failed"
             echo "session_id=failed" >> $GITHUB_OUTPUT
           else
             echo "session_id=$SESSION_ID" >> $GITHUB_OUTPUT
@@ -319,8 +323,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const batchType = '${{ matrix.batch.type }}';
-            const batchCount = ${{ matrix.batch.count }};
+            const batches = ${{ needs.group-alerts.outputs.batches }};
+            const totalIssues = ${{ steps.build-prompt.outputs.total_issues }};
+            const batchesCount = batches.length;
             const sessionId = '${{ steps.devin.outputs.session_id }}';
             const sessionUrl = '${{ steps.devin.outputs.session_url }}';
             const prNumber = context.payload.pull_request?.number;
@@ -330,38 +335,19 @@ jobs:
               ? 'Failed to start — check `DEVIN_API_KEY` secret'
               : `Started — [View Session](${sessionUrl})`;
 
-            const severityEmoji = {
-              'sql-injection': '🔴',
-              'xss': '🟠',
-              'command-injection': '🔴',
-              'path-traversal': '🟠',
-              'hardcoded-credentials': '🔴',
-              'insecure-deserialization': '🟠',
-              'weak-cryptography': '🟡',
-              'open-redirect': '🟡',
-              'ssrf': '🟠',
-              'csrf': '🟡',
-              'xxe': '🟠',
-              'null-dereference': '🟡',
-              'other-security': '⚪'
-            };
-
-            const emoji = severityEmoji[batchType] || '⚪';
-
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `${icon} **CodeQL Auto-Fix: \`${batchType}\`** ${emoji}
+              body: `${icon} **CodeQL Auto-Fix** 🛡️
 
             | Field | Value |
             |-------|-------|
-            | Vulnerability Type | \`${batchType}\` |
-            | Issues Found | ${batchCount} |
+            | Total Issues Found | ${totalIssues} |
+            | Vulnerability Batches | ${batchesCount} |
             | Devin Session | ${status} |
-            | Branch | \`${{ steps.build-prompt.outputs.branch_name }}\` |
 
-            A **draft PR** will be opened by Devin once fixes are ready. Please review before merging.`
+            Devin will resolve the issues sequentially in batches. A separate **draft PR** will be opened for each batch to prevent merge conflicts.`
             });
 
   # ──────────────────────────────────────────────
