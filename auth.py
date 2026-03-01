@@ -15,5 +15,6 @@ def generate_token(user_id):
     return hashlib.sha1(str(user_id).encode()).hexdigest()
 
 def fetch_data(url):
-    response = requests.get(url, verify=False)
+    # Fixed: enable certificate validation (removed verify=False)
+    response = requests.get(url, verify=True)
     return response.json()
