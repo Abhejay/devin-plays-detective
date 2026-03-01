@@ -48,9 +48,9 @@ def fetch_url():
 
 @app.route("/parse_xml", methods=["POST"])
 def parse_xml():
-    # XXE (CWE-611)
+    # XXE (CWE-611) - Fixed: disable external entity resolution
     xml_data = request.data
-    parser = etree.XMLParser(resolve_entities=True, no_network=False)
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, dtd_validation=False, load_dtd=False)
     tree = etree.fromstring(xml_data, parser=parser)
     return etree.tostring(tree)
 
