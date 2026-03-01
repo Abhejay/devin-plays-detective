@@ -1,6 +1,6 @@
 import json
 import yaml
-from flask import Flask, request, redirect, abort
+from flask import Flask, Response, request, redirect, abort
 import urllib.request
 from urllib.parse import urlparse
 from lxml import etree
@@ -49,10 +49,11 @@ def fetch_url():
 @app.route("/parse_xml", methods=["POST"])
 def parse_xml():
     # XXE (CWE-611) - Fixed: disable external entity resolution
+    # XSS (CWE-79) - Fixed: return with explicit XML content type to prevent browser HTML interpretation
     xml_data = request.data
     parser = etree.XMLParser(resolve_entities=False, no_network=True, dtd_validation=False, load_dtd=False)
     tree = etree.fromstring(xml_data, parser=parser)
-    return etree.tostring(tree)
+    return Response(etree.tostring(tree), content_type="application/xml")
 
 def load_user_session(session_data):
     # Insecure Deserialization (CWE-502) - Fixed: use JSON instead of pickle
