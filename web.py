@@ -1,7 +1,8 @@
 import pickle
 import yaml
-from flask import Flask, request, redirect
+from flask import Flask, request, redirect, abort
 import urllib.request
+from urllib.parse import urlparse
 from lxml import etree
 
 app = Flask(__name__)
@@ -18,10 +19,17 @@ def search():
     query = request.args.get("q", "")
     return f"<p>Search results for: {escape(query)}</p>"
 
+ALLOWED_REDIRECT_DOMAINS = {"example.com", "www.example.com"}
+
 @app.route("/redirect")
 def open_redirect():
-    # Open Redirect (CWE-601)
+    # Open Redirect (CWE-601) - Fixed: validate against allowlist
     url = request.args.get("url")
+    if not url:
+        abort(400, description="Missing 'url' parameter")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_REDIRECT_DOMAINS:
+        abort(400, description="Redirect to untrusted domain is not allowed")
     return redirect(url)
 
 @app.route("/fetch")
