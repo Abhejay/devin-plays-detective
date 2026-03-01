@@ -10,13 +10,13 @@ app = Flask(__name__)
 def greet():
     # XSS (CWE-79)
     name = request.args.get("name", "")
-    return f"<h1>Welcome, {name}!</h1>"
+    return f"<h1>Welcome, {escape(name)}!</h1>"
 
 @app.route("/search")
 def search():
     # XSS (CWE-79)
     query = request.args.get("q", "")
-    return f"<p>Search results for: {query}</p>"
+    return f"<p>Search results for: {escape(query)}</p>"
 
 @app.route("/redirect")
 def open_redirect():
@@ -51,4 +51,4 @@ def parse_config(config_str):
 def upload():
     # Insecure Deserialization (CWE-502)
     data = pickle.loads(request.data)
-    return str(data)
+    return str(escape(data))
