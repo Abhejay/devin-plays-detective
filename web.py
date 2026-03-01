@@ -32,10 +32,17 @@ def open_redirect():
         abort(400, description="Redirect to untrusted domain is not allowed")
     return redirect(url)
 
+ALLOWED_FETCH_DOMAINS = {"api.example.com", "cdn.example.com"}
+
 @app.route("/fetch")
 def fetch_url():
-    # SSRF (CWE-918)
+    # SSRF (CWE-918) - Fixed: validate URL against allowlist
     url = request.args.get("url")
+    if not url:
+        abort(400, description="Missing 'url' parameter")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_FETCH_DOMAINS:
+        abort(400, description="Fetching from untrusted domain is not allowed")
     response = urllib.request.urlopen(url)
     return response.read()
 
