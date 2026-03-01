@@ -1,4 +1,4 @@
-import pickle
+import json
 import yaml
 from flask import Flask, request, redirect, abort
 import urllib.request
@@ -55,15 +55,15 @@ def parse_xml():
     return etree.tostring(tree)
 
 def load_user_session(session_data):
-    # Insecure Deserialization (CWE-502)
-    return pickle.loads(session_data)
+    # Insecure Deserialization (CWE-502) - Fixed: use JSON instead of pickle
+    return json.loads(session_data)
 
 def parse_config(config_str):
-    # Insecure Deserialization (CWE-502)
-    return yaml.load(config_str)
+    # Insecure Deserialization (CWE-502) - Fixed: use safe YAML loader
+    return yaml.safe_load(config_str)
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    # Insecure Deserialization (CWE-502)
-    data = pickle.loads(request.data)
+    # Insecure Deserialization (CWE-502) - Fixed: use JSON instead of pickle
+    data = json.loads(request.data)
     return str(escape(data))
