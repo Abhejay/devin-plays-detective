@@ -51,7 +51,7 @@ def hash_password(password):
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def generate_token(user_id):
-    return hashlib.sha1(str(user_id).encode()).hexdigest()
+    return hashlib.sha256(str(user_id).encode()).hexdigest()
 
 def fetch_data(url):
     safe_url = _validate_url(url)
