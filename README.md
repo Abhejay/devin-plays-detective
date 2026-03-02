@@ -4,8 +4,7 @@ This repository demonstrates a fully automated, agentic CI/CD workflow that iden
 
 ## Features & Highlights
 
-### 1. The "Vulnerable Playground" App
-To effectively demonstrate the workflow, this repository contains a sample Python Flask application artificially seeded with critical OWASP vulnerabilities:
+### 1. Security Vulnerability Checks
 - SQL Injection (CWE-89)
 - Cross-Site Scripting (CWE-79)
 - Server-Side Request Forgery (SSRF - CWE-918)
