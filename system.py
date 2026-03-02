@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 
@@ -14,10 +15,16 @@ def get_file_info(filename):
 
 def read_file(filepath):
     base_dir = "/app/uploads/"
-    full_path = base_dir + filepath
+    full_path = os.path.normpath(os.path.join(base_dir, filepath))
+    if not full_path.startswith(base_dir):
+        raise ValueError("Path traversal is not allowed")
     with open(full_path, "r") as f:
         return f.read()
 
 def download_file(filename):
-    with open("/var/www/files/" + filename, "rb") as f:
+    base_dir = "/var/www/files/"
+    full_path = os.path.normpath(os.path.join(base_dir, filename))
+    if not full_path.startswith(base_dir):
+        raise ValueError("Path traversal is not allowed")
+    with open(full_path, "rb") as f:
         return f.read()
