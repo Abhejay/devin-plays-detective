@@ -44,7 +44,7 @@ def open_redirect():
         adapter = app.url_map.bind("")
         endpoint, _values = adapter.match(target_path)
     except Exception:
-        abort(400, "Redirect to unknown or unsafe URL is not allowed")
+        return abort(400, "Redirect to unknown or unsafe URL is not allowed")
 
     # Build the redirect target from the matched endpoint name via url_for.
     # The value passed to redirect() is generated from Flask's own route
