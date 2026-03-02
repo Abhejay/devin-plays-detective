@@ -30,17 +30,26 @@ def open_redirect():
     parsed = urlparse(url)
     if parsed.scheme and parsed.scheme not in ("http", "https"):
         abort(400, "Invalid URL scheme")
-    if parsed.netloc and parsed.netloc.split(":")[0] not in ALLOWED_REDIRECT_HOSTS:
-        abort(400, "Redirect to external host is not allowed")
-    if not parsed.netloc and not url.startswith("/"):
+    if parsed.netloc:
+        host = parsed.netloc.split(":")[0]
+        if host not in ALLOWED_REDIRECT_HOSTS:
+            abort(400, "Redirect to external host is not allowed")
+        safe_url = parsed._replace(scheme=parsed.scheme or "http").geturl()
+    elif url.startswith("/"):
+        safe_url = parsed.path
+        if parsed.query:
+            safe_url += "?" + parsed.query
+        if parsed.fragment:
+            safe_url += "#" + parsed.fragment
+    else:
         abort(400, "Invalid redirect URL")
-    return redirect(url)
+    return redirect(safe_url)
 
 @app.route("/fetch")
 def fetch_url():
     url = request.args.get("url")
-    auth._validate_url(url)
-    response = urllib.request.urlopen(url)
+    safe_url = auth._validate_url(url)
+    response = urllib.request.urlopen(safe_url)
     return response.read()
 
 @app.route("/parse_xml", methods=["POST"])
