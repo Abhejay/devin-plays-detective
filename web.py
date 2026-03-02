@@ -1,7 +1,7 @@
 import json
 import yaml
 from flask import Flask, request, redirect, escape, abort, Response
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import urllib.request
 from lxml import etree
 import db
@@ -22,29 +22,68 @@ def search():
     query = request.args.get("q", "")
     return f"<p>Search results for: {escape(query)}</p>"
 
+def _is_safe_local_redirect(target):
+    """Return True only if *target* resolves to a same-origin path.
+
+    The function rejects absolute URLs that point to an external host,
+    protocol-relative URLs (``//…``), and non-HTTP(S) schemes.  It then
+    resolves the remaining path against the server's own URL and
+    confirms that the result still points at the same origin.
+    """
+    if not target:
+        return False
+
+    parsed = urlparse(target)
+
+    # Reject non-HTTP(S) schemes
+    if parsed.scheme and parsed.scheme not in ("http", "https"):
+        return False
+
+    # If an explicit host is present it must be allow-listed
+    if parsed.netloc:
+        host = parsed.netloc.split(":")[0]
+        if host not in ALLOWED_REDIRECT_HOSTS:
+            return False
+
+    # Derive the local path (strip any host that was allow-listed)
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+
+    # Block protocol-relative URLs ("//…")
+    if path.startswith("//"):
+        return False
+
+    # Final same-origin gate: resolve against the server URL and
+    # verify the resulting netloc has not changed.
+    server_url = request.host_url
+    resolved = urljoin(server_url, path)
+    if urlparse(resolved).netloc != urlparse(server_url).netloc:
+        return False
+
+    return True
+
+
 @app.route("/redirect")
 def open_redirect():
     url = request.args.get("url")
     if not url:
         abort(400, "Missing url parameter")
-    parsed = urlparse(url)
-    if parsed.scheme and parsed.scheme not in ("http", "https"):
-        abort(400, "Invalid URL scheme")
-    if parsed.netloc:
-        host = parsed.netloc.split(":")[0]
-        if host not in ALLOWED_REDIRECT_HOSTS:
-            abort(400, "Redirect to external host is not allowed")
-        # Strip the external host and redirect to the path only.
-        # This prevents any user-supplied netloc from reaching the
-        # Location header, which would constitute an open redirect.
-        target_path = parsed.path or "/"
-        if not target_path.startswith("/"):
-            target_path = "/" + target_path
-        return redirect(target_path)
-    # Relative paths must start with "/" but NOT "//" (protocol-relative)
-    if not url.startswith("/") or url.startswith("//"):
-        abort(400, "Invalid redirect URL")
-    return redirect(url)
+
+    if not _is_safe_local_redirect(url):
+        abort(400, "Redirect to external or unsafe URL is not allowed")
+
+    # After validation, extract only the local path component so that
+    # no user-supplied scheme or netloc ever reaches the Location header.
+    local_path = urlparse(url).path or "/"
+    if not local_path.startswith("/"):
+        local_path = "/" + local_path
+
+    # Build a full same-origin URL from the server base and the
+    # validated local path.  This ensures the redirect target is
+    # always on the same origin.
+    safe_target = urljoin(request.host_url, local_path)
+    return redirect(safe_target)
 
 @app.route("/fetch")
 def fetch_url():
