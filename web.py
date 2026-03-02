@@ -1,4 +1,4 @@
-import pickle
+import json
 import yaml
 from flask import Flask, request, redirect, escape, abort
 from urllib.parse import urlparse
@@ -51,14 +51,14 @@ def parse_xml():
     return etree.tostring(tree)
 
 def load_user_session(session_data):
-    return pickle.loads(session_data)
+    return json.loads(session_data)
 
 def parse_config(config_str):
-    return yaml.load(config_str)
+    return yaml.safe_load(config_str)
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    data = pickle.loads(request.data)
+    data = json.loads(request.data)
     return str(escape(data))
 
 @app.route("/user")
