@@ -34,16 +34,17 @@ def open_redirect():
         host = parsed.netloc.split(":")[0]
         if host not in ALLOWED_REDIRECT_HOSTS:
             abort(400, "Redirect to external host is not allowed")
-        safe_url = parsed._replace(scheme=parsed.scheme or "http").geturl()
-    elif url.startswith("/"):
-        safe_url = parsed.path
-        if parsed.query:
-            safe_url += "?" + parsed.query
-        if parsed.fragment:
-            safe_url += "#" + parsed.fragment
-    else:
+        # Strip the external host and redirect to the path only.
+        # This prevents any user-supplied netloc from reaching the
+        # Location header, which would constitute an open redirect.
+        target_path = parsed.path or "/"
+        if not target_path.startswith("/"):
+            target_path = "/" + target_path
+        return redirect(target_path)
+    # Relative paths must start with "/" but NOT "//" (protocol-relative)
+    if not url.startswith("/") or url.startswith("//"):
         abort(400, "Invalid redirect URL")
-    return redirect(safe_url)
+    return redirect(url)
 
 @app.route("/fetch")
 def fetch_url():
