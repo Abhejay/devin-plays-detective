@@ -1,4 +1,4 @@
-# Automated Security Auto-Remediation with CodeQL & Devin AI
+# Devin-Plays-Detective
 
 This repository demonstrates a fully automated, agentic CI/CD workflow that identifies security vulnerabilities using **GitHub CodeQL** and autonomously orchestrates **Devin AI** to write, verify, and propose fixes via Pull Requests.
 
