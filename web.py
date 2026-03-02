@@ -48,8 +48,8 @@ def open_redirect():
 @app.route("/fetch")
 def fetch_url():
     url = request.args.get("url")
-    auth._validate_url(url)
-    response = urllib.request.urlopen(url)
+    safe_url = auth._validate_url(url)
+    response = urllib.request.urlopen(safe_url)
     return response.read()
 
 @app.route("/parse_xml", methods=["POST"])
