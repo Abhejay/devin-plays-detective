@@ -39,6 +39,7 @@ def open_redirect():
 @app.route("/fetch")
 def fetch_url():
     url = request.args.get("url")
+    auth._validate_url(url)
     response = urllib.request.urlopen(url)
     return response.read()
 
