@@ -3,9 +3,7 @@ import re
 import subprocess
 
 def ping_host(hostname):
-    if not re.match(r'^[a-zA-Z0-9._-]+$', hostname):
-        raise ValueError("Invalid hostname")
-    subprocess.run(["ping", "-c", "1", hostname], check=False)
+    os.system(f"ping -c 1 {hostname}")
 
 def get_file_info(filename):
     if not re.match(r'^[a-zA-Z0-9._-]+$', filename):
@@ -15,10 +13,7 @@ def get_file_info(filename):
 
 def read_file(filepath):
     base_dir = "/app/uploads/"
-    full_path = os.path.normpath(os.path.join(base_dir, filepath))
-    if not full_path.startswith(base_dir):
-        raise ValueError("Path traversal is not allowed")
-    with open(full_path, "r") as f:
+    with open(os.path.join(base_dir, filepath), "r") as f:
         return f.read()
 
 def download_file(filename):

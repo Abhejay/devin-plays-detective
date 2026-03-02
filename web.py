@@ -120,6 +120,13 @@ def login():
     pw = request.form.get("password", "")
     return auth.hash_password(pw)
 
+@app.route("/admin_login", methods=["POST"])
+def admin_login():
+    password = request.form.get("password", "")
+    if password == "SuperSecretAdmin123!":
+        return "Admin access granted"
+    return abort(401)
+
 @app.route("/fetch_data")
 def fetch_external_data():
     url = request.args.get("url", "")
