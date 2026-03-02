@@ -1,14 +1,12 @@
 import json
 import yaml
-from flask import Flask, request, redirect, escape, abort, Response
-from urllib.parse import urlparse, urljoin
+from flask import Flask, request, redirect, escape, abort, Response, url_for
+from urllib.parse import urlparse
 import urllib.request
 from lxml import etree
 import db
 import system
 import auth
-
-ALLOWED_REDIRECT_HOSTS = {"localhost", "127.0.0.1"}
 
 app = Flask(__name__)
 
@@ -22,71 +20,38 @@ def search():
     query = request.args.get("q", "")
     return f"<p>Search results for: {escape(query)}</p>"
 
-def _safe_local_redirect_path(target):
-    """Return a safe local path if *target* resolves to a same-origin path,
-    or ``None`` if the redirect would be unsafe.
-
-    The function rejects absolute URLs that point to an external host,
-    protocol-relative URLs (``//…``), and non-HTTP(S) schemes.  It then
-    resolves the remaining path against the server's own URL and
-    confirms that the result still points at the same origin.
-
-    By returning the sanitised path (rather than a boolean), the caller
-    never needs to re-derive values from the untrusted input, which
-    eliminates the open-redirect taint path flagged by CodeQL.
-    """
-    if not target:
-        return None
-
-    parsed = urlparse(target)
-
-    # Reject non-HTTP(S) schemes
-    if parsed.scheme and parsed.scheme not in ("http", "https"):
-        return None
-
-    # If an explicit host is present it must be allow-listed
-    if parsed.netloc:
-        host = parsed.netloc.split(":")[0]
-        if host not in ALLOWED_REDIRECT_HOSTS:
-            return None
-
-    # Derive the local path (strip any host that was allow-listed)
-    path = parsed.path or "/"
-    if not path.startswith("/"):
-        path = "/" + path
-
-    # Block protocol-relative URLs ("//…")
-    if path.startswith("//"):
-        return None
-
-    # Final same-origin gate: resolve against the server URL and
-    # verify the resulting netloc has not changed.
-    server_url = request.host_url
-    resolved = urljoin(server_url, path)
-    if urlparse(resolved).netloc != urlparse(server_url).netloc:
-        return None
-
-    return path
-
-
 @app.route("/redirect")
 def open_redirect():
     url = request.args.get("url")
     if not url:
         abort(400, "Missing url parameter")
 
-    # _safe_local_redirect_path returns a validated local path or None.
-    # By using the returned path directly we never re-derive values from
-    # the untrusted ``url`` parameter, breaking the taint chain.
-    local_path = _safe_local_redirect_path(url)
-    if local_path is None:
+    parsed = urlparse(url)
+
+    # Reject URLs with a scheme or network location (external redirects)
+    if parsed.scheme or parsed.netloc:
         abort(400, "Redirect to external or unsafe URL is not allowed")
 
-    # Build a full same-origin URL from the server base and the
-    # validated local path.  This ensures the redirect target is
-    # always on the same origin.
-    safe_target = urljoin(request.host_url, local_path)
-    return redirect(safe_target)
+    target_path = parsed.path or "/"
+
+    # Block protocol-relative URLs ("//…" or "/\…")
+    if target_path.startswith("//") or target_path.startswith("/\\"):
+        abort(400, "Redirect to external or unsafe URL is not allowed")
+
+    # Match the requested path against registered application routes.
+    # This rejects any path that does not correspond to a known endpoint.
+    try:
+        adapter = app.url_map.bind("")
+        endpoint, _values = adapter.match(target_path)
+    except Exception:
+        abort(400, "Redirect to unknown or unsafe URL is not allowed")
+
+    # Build the redirect target from the matched endpoint name via url_for.
+    # The value passed to redirect() is generated from Flask's own route
+    # table — not from user input — which breaks the taint chain that
+    # CodeQL flags as an open-redirect vulnerability (CWE-601).
+    safe_url = url_for(endpoint)
+    return redirect(safe_url)
 
 @app.route("/fetch")
 def fetch_url():
