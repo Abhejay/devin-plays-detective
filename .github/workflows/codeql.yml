@@ -4,6 +4,16 @@ on:
   pull_request:
     branches: ["main", "master", "develop"]
     types: [opened, synchronize, reopened]
+  push:
+    branches: ["main", "master", "develop"]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      max_issues:
+        description: 'Maximum number of CodeQL issues to fix in this session'
+        required: false
+        default: '30'
 
 permissions:
   contents: read
@@ -12,9 +22,6 @@ permissions:
   actions: read
 
 jobs:
-  # ──────────────────────────────────────────────
-  # JOB 1: Run CodeQL Scan
-  # ──────────────────────────────────────────────
   codeql-scan:
     name: CodeQL Scan
     runs-on: ubuntu-latest
@@ -22,14 +29,10 @@ jobs:
       security-events: write
       actions: read
       contents: read
-
     strategy:
       fail-fast: false
       matrix:
-        # Adjust languages to match your repo
         language: ["python"]
-        # Supported: cpp, csharp, go, java, javascript, python, ruby, swift
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -57,9 +60,6 @@ jobs:
           path: codeql-results/*.sarif
           retention-days: 7
 
-  # ──────────────────────────────────────────────
-  # JOB 2: Parse & Group Alerts by Vulnerability Type
-  # ──────────────────────────────────────────────
   group-alerts:
     name: Group Alerts by Vulnerability Type
     runs-on: ubuntu-latest
@@ -67,7 +67,6 @@ jobs:
     outputs:
       batches: ${{ steps.group.outputs.batches }}
       has_issues: ${{ steps.group.outputs.has_issues }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -165,17 +164,12 @@ jobs:
             core.setOutput('batches', JSON.stringify(batches));
             core.setOutput('has_issues', hasIssues.toString());
 
-  # ──────────────────────────────────────────────
-  # JOB 3: Fetch alerts directly from GitHub API
-  # (Supplements SARIF with live alert IDs)
-  # ──────────────────────────────────────────────
   fetch-live-alerts:
     name: Fetch Live CodeQL Alerts
     runs-on: ubuntu-latest
     needs: codeql-scan
     outputs:
       alert_map: ${{ steps.fetch.outputs.alert_map }}
-
     steps:
       - name: Fetch open CodeQL alerts via API
         id: fetch
@@ -217,7 +211,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [group-alerts, fetch-live-alerts]
     if: needs.group-alerts.outputs.has_issues == 'true'
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -225,20 +218,33 @@ jobs:
       - name: Build Devin prompt for all issues
         id: build-prompt
         uses: actions/github-script@v7
+        env:
+          BATCHES_JSON: ${{ needs.group-alerts.outputs.batches }}
+          ALERT_MAP_JSON: ${{ needs.fetch-live-alerts.outputs.alert_map }}
+          MAX_ISSUES: ${{ github.event.inputs.max_issues || '30' }}
         with:
           script: |
-            const batches = ${{ needs.group-alerts.outputs.batches }};
-            const alertMap = ${{ needs.fetch-live-alerts.outputs.alert_map }};
+            const batches = JSON.parse(process.env.BATCHES_JSON || '[]');
+            const alertMap = JSON.parse(process.env.ALERT_MAP_JSON || '{}');
+            const maxIssues = parseInt(process.env.MAX_ISSUES, 10) || 30;
             const prNumber = context.payload.pull_request?.number;
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const targetBranch = context.payload.pull_request?.head?.ref || context.ref.replace('refs/heads/', '');
+            const branchNameSuffix = prNumber ? `pr${prNumber}` : `${targetBranch}`;
+            const linkText = prNumber ? `and a link back to PR #${prNumber}` : `and mention that this fixes automated CodeQL findings on branch ${targetBranch}`;
 
             let totalIssues = 0;
             let batchList = "";
 
             for (const batch of batches) {
-              batchList += `\n### Batch: ${batch.type.toUpperCase().replace(/-/g, ' ')} (${batch.count} issues)\n`;
+              if (totalIssues >= maxIssues) break;
+              
+              const remainingQuota = maxIssues - totalIssues;
+              const issuesToProcess = batch.issues.slice(0, remainingQuota);
+              
+              batchList += `\n### Batch: ${batch.type.toUpperCase().replace(/-/g, ' ')} (${issuesToProcess.length} issues)\n`;
               let issueIndex = 1;
-              for (const issue of batch.issues) {
+              for (const issue of issuesToProcess) {
                 totalIssues++;
                 const liveAlerts = alertMap[issue.ruleId] || [];
                 const alertUrls = liveAlerts.map(a => a.url).join(', ');
@@ -253,7 +259,7 @@ jobs:
 
             ## Repository
             ${repoUrl}
-            Branch to fix: \`${context.payload.pull_request?.head?.ref || 'main'}\`
+            Branch to fix: \`${targetBranch}\`
 
             ## Vulnerabilities to Fix (${totalIssues} issue(s) total)
             ${batchList}
@@ -262,16 +268,16 @@ jobs:
             You must resolve the vulnerabilities in batches. Create a separate PR for each batch.
             To prevent merge conflicts, you must run these sequentially and "stack" your branches:
 
-            1. Clone the repository and checkout the branch to fix: \`${context.payload.pull_request?.head?.ref || 'main'}\`.
+            1. Clone the repository and checkout the branch to fix: \`${targetBranch}\`.
             2. For each batch (in the order listed above):
-               a. Create a new branch based on your CURRENT state (so it includes fixes from previous batches). Name it \`fix/codeql-<batch-type>-pr${prNumber}-<timestamp>\`.
+               a. Create a new branch based on your CURRENT state (so it includes fixes from previous batches). Name it \`fix/codeql-<batch-type>-${branchNameSuffix}-<timestamp>\`.
                b. Fix ALL issues in that specific batch.
                c. Follow secure coding best practices — do NOT just suppress warnings.
                d. Ensure existing tests still pass; add new tests if appropriate.
                e. Commit with message: \`fix(security): resolve <batch-type> CodeQL findings\`
-               f. Push the branch and open a **DRAFT** pull request targeting \`${context.payload.pull_request?.head?.ref || 'main'}\`.
+               f. Push the branch and open a **DRAFT** pull request targeting \`${targetBranch}\`.
                g. PR title: \`[Security] Fix <batch-type> CodeQL finding(s)\`.
-               h. PR description must include: list of fixed files, brief explanation of each fix, and a link back to PR #${prNumber}.
+               h. PR description must include: list of fixed files, brief explanation of each fix, ${linkText}.
 
             By basing each new branch on the previous one, you ensure that all PRs can be merged without conflicts.
 
@@ -309,9 +315,9 @@ jobs:
           SESSION_ID=$(echo "$RESPONSE" | jq -r '.session_id // empty')
           SESSION_URL=$(echo "$RESPONSE" | jq -r '.url // empty')
 
-          if [ -z "$SESSION_ID" ]; then
-            echo "::warning::Devin session creation failed"
-            echo "session_id=failed" >> $GITHUB_OUTPUT
+          if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
+            echo "::error::Devin session creation failed. Cannot proceed."
+            exit 1
           else
             echo "session_id=$SESSION_ID" >> $GITHUB_OUTPUT
             echo "session_url=$SESSION_URL" >> $GITHUB_OUTPUT
@@ -319,21 +325,27 @@ jobs:
           fi
 
       - name: Comment on PR with Devin session details
+        if: ${{ always() && github.event_name == 'pull_request' }}
         uses: actions/github-script@v7
+        env:
+          BATCHES_JSON: ${{ needs.group-alerts.outputs.batches }}
+          TOTAL_ISSUES: ${{ steps.build-prompt.outputs.total_issues }}
+          SESSION_ID: ${{ steps.devin.outputs.session_id }}
+          SESSION_URL: ${{ steps.devin.outputs.session_url }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const batches = ${{ needs.group-alerts.outputs.batches }};
-            const totalIssues = ${{ steps.build-prompt.outputs.total_issues }};
+            const batches = JSON.parse(process.env.BATCHES_JSON || '[]');
+            const totalIssues = process.env.TOTAL_ISSUES || '0';
             const batchesCount = batches.length;
-            const sessionId = '${{ steps.devin.outputs.session_id }}';
-            const sessionUrl = '${{ steps.devin.outputs.session_url }}';
+            const sessionId = process.env.SESSION_ID || '';
+            const sessionUrl = process.env.SESSION_URL || '';
             const prNumber = context.payload.pull_request?.number;
 
-            const icon = sessionId === 'failed' ? '⚠️' : '🤖';
-            const status = sessionId === 'failed'
-              ? 'Failed to start — check `DEVIN_API_KEY` secret'
-              : `Started — [View Session](${sessionUrl})`;
+            const icon = sessionId ? '🤖' : '⚠️';
+            const status = sessionId
+              ? `Started — [View Session](${sessionUrl})`
+              : 'Failed to start — check GitHub Actions logs';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -345,20 +357,16 @@ jobs:
             |-------|-------|
             | Total Issues Found | ${totalIssues} |
             | Vulnerability Batches | ${batchesCount} |
-            | Devin Session | ${status} |
+            | Devin Session | ${status} |                 
 
             Devin will resolve the issues sequentially in batches. A separate **draft PR** will be opened for each batch to prevent merge conflicts.`
             });
 
-  # ──────────────────────────────────────────────
-  # JOB 5: Summary comment if no issues found
-  # ──────────────────────────────────────────────
   no-issues-comment:
     name: Comment — No Issues Found
     runs-on: ubuntu-latest
     needs: group-alerts
-    if: needs.group-alerts.outputs.has_issues == 'false'
-
+    if: needs.group-alerts.outputs.has_issues == 'false' && github.event_name == 'pull_request'
     steps:
       - name: Post clean bill of health
         uses: actions/github-script@v7
