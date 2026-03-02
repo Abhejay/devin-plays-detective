@@ -5,7 +5,7 @@ import subprocess
 def ping_host(hostname):
     if not re.match(r'^[a-zA-Z0-9._-]+$', hostname):
         raise ValueError("Invalid hostname")
-    subprocess.run(["ping", "-c", "1", hostname], check=False)
+    subprocess.run(["ping", "-c", "1", hostname])
 
 def get_file_info(filename):
     if not re.match(r'^[a-zA-Z0-9._-]+$', filename):
