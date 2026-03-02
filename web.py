@@ -1,11 +1,14 @@
 import pickle
 import yaml
-from flask import Flask, request, redirect, escape
+from flask import Flask, request, redirect, escape, abort
+from urllib.parse import urlparse
 import urllib.request
 from lxml import etree
 import db
 import system
 import auth
+
+ALLOWED_REDIRECT_HOSTS = {"localhost", "127.0.0.1"}
 
 app = Flask(__name__)
 
@@ -22,6 +25,15 @@ def search():
 @app.route("/redirect")
 def open_redirect():
     url = request.args.get("url")
+    if not url:
+        abort(400, "Missing url parameter")
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.scheme not in ("http", "https"):
+        abort(400, "Invalid URL scheme")
+    if parsed.netloc and parsed.netloc.split(":")[0] not in ALLOWED_REDIRECT_HOSTS:
+        abort(400, "Redirect to external host is not allowed")
+    if not parsed.netloc and not url.startswith("/"):
+        abort(400, "Invalid redirect URL")
     return redirect(url)
 
 @app.route("/fetch")
