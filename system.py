@@ -15,7 +15,10 @@ def get_file_info(filename):
 
 def read_file(filepath):
     base_dir = "/app/uploads/"
-    with open(os.path.join(base_dir, filepath), "r") as f:
+    full_path = os.path.normpath(os.path.join(base_dir, filepath))
+    if not full_path.startswith(base_dir):
+        raise ValueError("Path traversal is not allowed")
+    with open(full_path, "r") as f:
         return f.read()
 
 def download_file(filename):
