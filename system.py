@@ -3,7 +3,6 @@ import re
 import subprocess
 
 def ping_host(hostname):
-    # Vulnerable to command injection
     os.system(f"ping -c 1 {hostname}")
 
 def get_file_info(filename):
@@ -14,7 +13,6 @@ def get_file_info(filename):
 
 def read_file(filepath):
     base_dir = "/app/uploads/"
-    # Vulnerable to path traversal
     with open(os.path.join(base_dir, filepath), "r") as f:
         return f.read()
 
