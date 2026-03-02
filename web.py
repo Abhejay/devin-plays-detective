@@ -1,6 +1,6 @@
 import json
 import yaml
-from flask import Flask, request, redirect, escape, abort
+from flask import Flask, request, redirect, escape, abort, Response
 from urllib.parse import urlparse
 import urllib.request
 from lxml import etree
@@ -48,7 +48,7 @@ def parse_xml():
     xml_data = request.data
     parser = etree.XMLParser(resolve_entities=False, no_network=True, dtd_validation=False, load_dtd=False)
     tree = etree.fromstring(xml_data, parser=parser)
-    return etree.tostring(tree)
+    return Response(etree.tostring(tree), content_type="application/xml")
 
 def load_user_session(session_data):
     return json.loads(session_data)
@@ -106,4 +106,5 @@ def login():
 @app.route("/fetch_data")
 def fetch_external_data():
     url = request.args.get("url", "")
-    return auth.fetch_data(url)
+    data = auth.fetch_data(url)
+    return Response(json.dumps(data), content_type="application/json")
