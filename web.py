@@ -22,28 +22,33 @@ def search():
     query = request.args.get("q", "")
     return f"<p>Search results for: {escape(query)}</p>"
 
-def _is_safe_local_redirect(target):
-    """Return True only if *target* resolves to a same-origin path.
+def _safe_local_redirect_path(target):
+    """Return a safe local path if *target* resolves to a same-origin path,
+    or ``None`` if the redirect would be unsafe.
 
     The function rejects absolute URLs that point to an external host,
     protocol-relative URLs (``//…``), and non-HTTP(S) schemes.  It then
     resolves the remaining path against the server's own URL and
     confirms that the result still points at the same origin.
+
+    By returning the sanitised path (rather than a boolean), the caller
+    never needs to re-derive values from the untrusted input, which
+    eliminates the open-redirect taint path flagged by CodeQL.
     """
     if not target:
-        return False
+        return None
 
     parsed = urlparse(target)
 
     # Reject non-HTTP(S) schemes
     if parsed.scheme and parsed.scheme not in ("http", "https"):
-        return False
+        return None
 
     # If an explicit host is present it must be allow-listed
     if parsed.netloc:
         host = parsed.netloc.split(":")[0]
         if host not in ALLOWED_REDIRECT_HOSTS:
-            return False
+            return None
 
     # Derive the local path (strip any host that was allow-listed)
     path = parsed.path or "/"
@@ -52,16 +57,16 @@ def _is_safe_local_redirect(target):
 
     # Block protocol-relative URLs ("//…")
     if path.startswith("//"):
-        return False
+        return None
 
     # Final same-origin gate: resolve against the server URL and
     # verify the resulting netloc has not changed.
     server_url = request.host_url
     resolved = urljoin(server_url, path)
     if urlparse(resolved).netloc != urlparse(server_url).netloc:
-        return False
+        return None
 
-    return True
+    return path
 
 
 @app.route("/redirect")
@@ -70,14 +75,12 @@ def open_redirect():
     if not url:
         abort(400, "Missing url parameter")
 
-    if not _is_safe_local_redirect(url):
+    # _safe_local_redirect_path returns a validated local path or None.
+    # By using the returned path directly we never re-derive values from
+    # the untrusted ``url`` parameter, breaking the taint chain.
+    local_path = _safe_local_redirect_path(url)
+    if local_path is None:
         abort(400, "Redirect to external or unsafe URL is not allowed")
-
-    # After validation, extract only the local path component so that
-    # no user-supplied scheme or netloc ever reaches the Location header.
-    local_path = urlparse(url).path or "/"
-    if not local_path.startswith("/"):
-        local_path = "/" + local_path
 
     # Build a full same-origin URL from the server base and the
     # validated local path.  This ensures the redirect target is
